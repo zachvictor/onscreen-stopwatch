@@ -15,7 +15,9 @@ Keep this stopwatch in the frame. After the cut, the time jumps, and the viewer 
 
 ## Use
 
-Open `index.html` in a browser. The page is one file. It needs no server, no build step, and no network.
+Open the [hosted page](https://zachvictor.github.io/onscreen-stopwatch/).
+
+To use the stopwatch offline, download `index.html` and open it in a browser. The page is one file. It needs no server and no build step.
 
 | Action           | Mouse          | Key   |
 |------------------|----------------|-------|

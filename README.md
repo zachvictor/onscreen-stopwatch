@@ -52,3 +52,7 @@ The display shows tenths of a second. It truncates the time and does not round i
 ## Tested
 
 Chrome 158 on macOS.
+
+## License
+
+[MIT](LICENSE)

@@ -1,0 +1,8 @@
+# JetBrains IDE settings
+.idea/
+
+# macOS Finder metadata
+.DS_Store
+
+# Local scratch files
+tmp/

@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stopwatch</title>
+<style>
+  /* The dark theme is the default. The script sets data-theme on the root element. */
+  :root {
+    color-scheme: dark;
+    --background: #0c0c0e;
+    --idle: #8e8e93;
+    --running: #ffffff;
+    --stopped: #ffd60a;
+    --strip: rgb(12 12 14 / 0.8);
+    --button: #2c2c2e;
+    --button-hover: #3a3a3c;
+    --button-border: #48484a;
+    --button-text: #d1d1d6;
+    --key-hint: #8e8e93;
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --background: #ffffff;
+    --idle: #8e8e93;
+    --running: #000000;
+    --stopped: #c2410c;
+    --strip: rgb(255 255 255 / 0.85);
+    --button: #f2f2f7;
+    --button-hover: #e5e5ea;
+    --button-border: #c7c7cc;
+    --button-text: #1c1c1e;
+    --key-hint: #6e6e73;
+  }
+
+  html, body {
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+    background: var(--background);
+  }
+
+  #stage {
+    position: relative;
+    height: 100%;
+    cursor: pointer;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  /* The SVG viewBox is set to the bounding box of the text.
+     The browser then scales the time to fit any window size. */
+  #face {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+
+  #readout {
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-size: 100px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    fill: var(--idle);
+  }
+  #fraction {
+    font-size: 58px;
+    fill-opacity: 0.6;
+  }
+  [data-state="running"] #readout { fill: var(--running); }
+  [data-state="stopped"] #readout { fill: var(--stopped); }
+
+  /* The controls show only while the pointer rests on the window,
+     or while a control has keyboard focus. The delay keeps a quick
+     click on the time out of the recording. */
+  #controls {
+    position: absolute;
+    inset: auto 0 0 0;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 6px;
+    padding: 6px;
+    background: var(--strip);
+    opacity: 0;
+    transition: opacity 0.15s;
+    cursor: default;
+  }
+  #stage:hover #controls {
+    opacity: 1;
+    transition-delay: 0.7s;
+  }
+  #controls:hover,
+  #controls:focus-within {
+    opacity: 1;
+    transition-delay: 0s;
+  }
+  #controls button {
+    font: 500 11px/1 system-ui, -apple-system, "Segoe UI", sans-serif;
+    color: var(--button-text);
+    background: var(--button);
+    border: 1px solid var(--button-border);
+    border-radius: 5px;
+    padding: 5px 8px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  #controls button:hover { background: var(--button-hover); }
+  #controls kbd {
+    font: inherit;
+    color: var(--key-hint);
+    margin-left: 4px;
+  }
+
+  #away {
+    margin: 0;
+    padding: 24px;
+    font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+    color: var(--key-hint);
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+
+<div id="stage" data-state="idle">
+  <svg id="face" role="timer" aria-label="Elapsed time">
+    <text id="readout" x="0" y="0"><tspan id="whole">00:00</tspan><tspan id="fraction">.0</tspan></text>
+  </svg>
+  <div id="controls">
+    <button id="toggle" type="button"><span id="toggle-label">Start</span><kbd>Space</kbd></button>
+    <button id="reset" type="button">Reset<kbd>R</kbd></button>
+    <button id="float" type="button" hidden title="Open in a small window that stays on top of other windows">Float<kbd>F</kbd></button>
+    <button id="theme" type="button" title="Switch between the dark theme and the light theme"><span id="theme-label">Light</span><kbd>T</kbd></button>
+  </div>
+</div>
+
+<p id="away" hidden>The stopwatch is in its floating window. Close that window to bring the stopwatch back here.</p>
+
+<script>
+'use strict';
+
+const stage = document.getElementById('stage');
+const face = document.getElementById('face');
+const readout = document.getElementById('readout');
+const whole = document.getElementById('whole');
+const fraction = document.getElementById('fraction');
+const controls = document.getElementById('controls');
+const toggleLabel = document.getElementById('toggle-label');
+const floatButton = document.getElementById('float');
+const themeLabel = document.getElementById('theme-label');
+const away = document.getElementById('away');
+
+const THEME_KEY = 'onscreen-stopwatch.theme';
+
+// Document Picture-in-Picture gives a small window that stays on top. Chrome and Edge have it.
+const canFloat = 'documentPictureInPicture' in window;
+
+// Time comes from the monotonic clock, not from a count of ticks.
+// A throttled or hidden window therefore cannot make the stopwatch lose time.
+let bankedMs = 0;       // total of the finished runs
+let startedAt = null;   // performance.now() at the start of the current run; null while stopped
+let shownTenths = -1;   // the value on screen, in tenths of a second
+let frame = null;       // the pending animation frame: { win, id }
+let theme = savedTheme() === 'light' ? 'light' : 'dark';
+
+// The browser can refuse access to storage: a private window, or a setting that blocks site data.
+// The stopwatch then works as usual, but does not remember the theme.
+function savedTheme() {
+  try { return localStorage.getItem(THEME_KEY); } catch { return null; }
+}
+
+function saveTheme() {
+  try { localStorage.setItem(THEME_KEY, theme); } catch { /* see savedTheme() */ }
+}
+
+// Sets the theme on this page and on the page that shows the stopwatch.
+// The two are different pages while the stopwatch floats.
+function applyTheme() {
+  document.documentElement.dataset.theme = theme;
+  stage.ownerDocument.documentElement.dataset.theme = theme;
+  themeLabel.textContent = theme === 'dark' ? 'Light' : 'Dark';
+}
+
+function toggleTheme() {
+  theme = theme === 'dark' ? 'light' : 'dark';
+  saveTheme();
+  applyTheme();
+}
+
+const isRunning = () => startedAt !== null;
+const elapsedMs = () => bankedMs + (isRunning() ? performance.now() - startedAt : 0);
+const twoDigits = (n) => String(n).padStart(2, '0');
+
+function render() {
+  // Truncate, as a stopwatch does. Do not round up to a time that has not passed.
+  const tenths = Math.floor(elapsedMs() / 100);
+  if (tenths === shownTenths) return;
+  shownTenths = tenths;
+
+  const seconds = Math.floor(tenths / 10);
+  const minutes = Math.floor(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+  const text = (hours > 0 ? hours + ':' : '') + twoDigits(minutes % 60) + ':' + twoDigits(seconds % 60);
+
+  const lengthChanged = text.length !== whole.textContent.length;
+  whole.textContent = text;
+  fraction.textContent = '.' + (tenths % 10);
+  if (lengthChanged) fitFace();
+}
+
+// Sets the viewBox to the text box plus a margin. The digits are tabular,
+// so the box changes only when the number of characters changes.
+function fitFace() {
+  const box = readout.getBBox();
+  const margin = box.height * 0.08;
+  face.setAttribute('viewBox', [
+    box.x - margin,
+    box.y,
+    box.width + 2 * margin,
+    box.height,
+  ].join(' '));
+}
+
+function setState() {
+  stage.dataset.state = isRunning() ? 'running' : bankedMs > 0 ? 'stopped' : 'idle';
+  toggleLabel.textContent = isRunning() ? 'Stop' : 'Start';
+}
+
+// The frames must come from the window that shows the stopwatch.
+// The browser pauses the frames of a covered or hidden window.
+function scheduleFrame() {
+  const win = stage.ownerDocument.defaultView;
+  frame = { win, id: win.requestAnimationFrame(tick) };
+}
+
+function cancelFrame() {
+  if (frame === null) return;
+  frame.win.cancelAnimationFrame(frame.id);
+  frame = null;
+}
+
+function tick() {
+  frame = null;
+  render();
+  if (isRunning()) scheduleFrame();
+}
+
+function toggle() {
+  if (isRunning()) {
+    bankedMs += performance.now() - startedAt;
+    startedAt = null;
+    cancelFrame();
+  } else {
+    startedAt = performance.now();
+    scheduleFrame();
+  }
+  setState();
+  render();
+}
+
+function reset() {
+  bankedMs = 0;
+  startedAt = null;
+  cancelFrame();
+  setState();
+  render();
+}
+
+async function float() {
+  if (!canFloat || documentPictureInPicture.window) return;
+  const pip = await documentPictureInPicture.requestWindow({ width: 340, height: 130 });
+
+  pip.document.head.append(document.querySelector('style').cloneNode(true));
+  pip.document.body.append(stage);
+  pip.document.addEventListener('keydown', onKeyDown);
+  floatButton.hidden = true;
+  away.hidden = false;
+  applyTheme();
+  moveFrames();
+
+  // "pagehide" fires when the floating window closes, for any reason.
+  pip.addEventListener('pagehide', () => {
+    document.body.prepend(stage);
+    floatButton.hidden = false;
+    away.hidden = true;
+    moveFrames();
+  });
+}
+
+// Moves a pending frame to the window that now shows the stopwatch.
+function moveFrames() {
+  cancelFrame();
+  if (isRunning()) scheduleFrame();
+  render();
+}
+
+function onKeyDown(event) {
+  if (event.repeat || event.metaKey || event.ctrlKey || event.altKey) return;
+  // A focused button handles Space and Enter itself.
+  if (event.target.closest('button') && (event.code === 'Space' || event.code === 'Enter')) return;
+
+  if (event.code === 'Space') toggle();
+  else if (event.code === 'KeyR') reset();
+  else if (event.code === 'KeyF') float();
+  else if (event.code === 'KeyT') toggleTheme();
+  else return;
+  event.preventDefault();
+}
+
+document.addEventListener('keydown', onKeyDown);
+face.addEventListener('click', toggle);
+document.getElementById('toggle').addEventListener('click', toggle);
+document.getElementById('reset').addEventListener('click', reset);
+floatButton.addEventListener('click', float);
+document.getElementById('theme').addEventListener('click', toggleTheme);
+// A mouse click must not leave focus on a button. Space would then press that button again.
+controls.addEventListener('mousedown', (event) => event.preventDefault());
+
+floatButton.hidden = !canFloat;
+applyTheme();
+fitFace();
+setState();
+render();
+</script>
+</body>
+</html>
